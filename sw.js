@@ -2,7 +2,7 @@
    Paths are relative so the site works at /eri-sctyping/ on GitHub Pages. */
 "use strict";
 
-const CACHE = "sucheng-static-v1";
+const CACHE = "sucheng-static-v2";
 const ASSETS = [
   "./",
   "./index.html",

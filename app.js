@@ -1,7 +1,7 @@
 "use strict";
 
 const ROUND_SIZE = 50;
-const ADVANCE_MS = 700;
+const PAGE_SIZE = 9;
 const STORAGE_KEY = "sucheng-practice-v1";
 
 const practiceEl = document.getElementById("practice");
@@ -15,6 +15,7 @@ const catcherEl = document.getElementById("catcher");
 
 let pool = [];
 let allByChar = new Map();
+let byCode = new Map();
 let radicalMap = {};
 let radicalGroups = [];
 let radicalRows = [];
@@ -35,9 +36,9 @@ const state = {
   hintLevel: 0,
   revealed: false,
   notice: "",
+  candidates: null,
+  page: 0,
   session: freshSession(),
-  timer: null,
-  pendingAdvance: false,
 };
 
 function emptyStore() {
@@ -164,18 +165,11 @@ function resetCard() {
   state.hintLevel = 0;
   state.revealed = false;
   state.notice = "";
-}
-
-function clearTimer() {
-  if (state.timer) {
-    clearTimeout(state.timer);
-    state.timer = null;
-  }
+  state.candidates = null;
+  state.page = 0;
 }
 
 function startPractice(block) {
-  clearTimer();
-  state.pendingAdvance = false;
   const taken = takeBlock(block);
   state.kind = "practice";
   state.mode = "question";
@@ -214,6 +208,8 @@ function capturePause() {
     counted: state.counted,
     hintLevel: state.hintLevel,
     revealed: state.revealed,
+    candidates: state.candidates,
+    page: state.page,
   };
 }
 
@@ -221,11 +217,8 @@ function startReview() {
   const round = buildReviewRound();
   if (!round.length) return false;
   if (state.kind !== "review") {
-    clearTimer();
     paused = capturePause();
   }
-  clearTimer();
-  state.pendingAdvance = false;
   state.kind = "review";
   state.mode = "question";
   state.round = round;
@@ -238,7 +231,6 @@ function startReview() {
 }
 
 function exitReview() {
-  clearTimer();
   const snap = paused;
   paused = null;
   if (!snap) {
@@ -256,8 +248,9 @@ function exitReview() {
   state.counted = snap.counted;
   state.hintLevel = snap.hintLevel;
   state.revealed = snap.revealed;
+  state.candidates = snap.candidates;
+  state.page = snap.page;
   state.notice = "";
-  if (state.outcome === "correct" && state.mode === "question") scheduleAdvance();
   render();
   focusCatcher();
 }
@@ -296,21 +289,7 @@ function recordHit(entry) {
   saveStore();
 }
 
-function scheduleAdvance() {
-  clearTimer();
-  state.timer = setTimeout(() => {
-    state.timer = null;
-    if (!overlayEl.hidden) {
-      state.pendingAdvance = true;
-      return;
-    }
-    if (state.outcome === "correct" && state.mode === "question") advance();
-  }, ADVANCE_MS);
-}
-
 function advance() {
-  clearTimer();
-  state.pendingAdvance = false;
   if (state.mode !== "question") return;
   state.index += 1;
   resetCard();
@@ -322,7 +301,6 @@ function advance() {
 }
 
 function finishRound() {
-  clearTimer();
   if (state.kind === "practice") {
     store.nextBlock = (state.block + 1) % blockCount();
     saveStore();
@@ -331,40 +309,103 @@ function finishRound() {
   render();
 }
 
-function submit() {
-  const entry = current();
-  if (!entry || !state.typed) return;
-  if (isCorrect(entry, state.typed)) {
-    const kept = state.revealed;
-    state.outcome = "correct";
-    recordHit(entry);
-    announce("答對。" + entry.char + " 係 " + state.typed + (kept ? "。留喺複習" : ""));
-    scheduleAdvance();
-  } else {
-    state.outcome = "wrong";
-    recordMiss(entry);
-    announce("唔對，再試一次");
+function indexByCode(characters) {
+  const map = new Map();
+  for (const entry of characters) {
+    const codes = [entry.code].concat(entry.alts || []);
+    for (const code of codes) {
+      if (!map.has(code)) map.set(code, []);
+      const list = map.get(code);
+      if (!list.some((item) => item.char === entry.char)) list.push(entry);
+    }
   }
+  return map;
+}
+
+function markWrong(entry) {
+  state.candidates = null;
+  state.page = 0;
+  state.outcome = "wrong";
+  recordMiss(entry);
+  announce("唔對，再試一次");
+}
+
+function openCandidates(entry) {
+  const typed = state.typed.toUpperCase();
+  const list = byCode.get(typed) || [];
+  const targetInList = list.some((item) => item.char === entry.char);
+  if (!isCorrect(entry, typed) || !targetInList) {
+    markWrong(entry);
+    return;
+  }
+  state.candidates = list;
+  state.page = 0;
+  state.outcome = "choosing";
+  announce("揀返題目嗰個字");
+}
+
+function pageCount() {
+  if (!state.candidates || !state.candidates.length) return 1;
+  return Math.ceil(state.candidates.length / PAGE_SIZE);
+}
+
+function changePage(delta) {
+  if (state.outcome !== "choosing") return;
+  const next = state.page + delta;
+  if (next < 0 || next >= pageCount()) return;
+  state.page = next;
   render();
 }
 
-function onLetter(letter) {
-  if (!overlayEl.hidden || state.mode !== "question") return;
-  state.notice = "";
-  if (state.outcome === "correct") {
-    advance();
-    onLetter(letter);
-    return;
+function pickRelative(offset) {
+  if (state.outcome !== "choosing" || !state.candidates) return;
+  const chosen = state.candidates[state.page * PAGE_SIZE + offset];
+  const entry = current();
+  if (!chosen || !entry) return;
+  state.candidates = null;
+  state.page = 0;
+  if (chosen.char === entry.char) {
+    const kept = state.revealed;
+    state.outcome = "correct";
+    recordHit(entry);
+    announce("答對。" + entry.char + (kept ? "。留喺複習" : ""));
+  } else {
+    markWrong(entry);
   }
+  render();
+  focusCatcher();
+}
+
+function onLetter(letter) {
+  if (!overlayEl.hidden || state.mode !== "question" || state.outcome === "correct") return;
+  state.notice = "";
   const entry = current();
   if (!entry) return;
-  if (state.typed.length >= entry.code.length) {
+  if (state.outcome === "choosing" || state.typed.length >= entry.code.length) {
     state.typed = "";
-    if (state.outcome === "wrong") state.outcome = null;
+    state.candidates = null;
+    state.page = 0;
+    if (state.outcome === "wrong" || state.outcome === "choosing") {
+      state.outcome = state.revealed ? "revealed" : state.hintLevel === 1 ? "hint" : null;
+    }
   }
   state.typed += letter.toUpperCase();
+  if (state.typed.length >= entry.code.length) openCandidates(entry);
   render();
-  if (state.typed.length >= entry.code.length) submit();
+}
+
+function typingOutcome() {
+  if (state.revealed) return "revealed";
+  if (state.hintLevel === 1) return "hint";
+  return null;
+}
+
+function clearTyping() {
+  state.typed = "";
+  state.notice = "";
+  state.candidates = null;
+  state.page = 0;
+  state.outcome = typingOutcome();
 }
 
 function showHint() {
@@ -373,12 +414,14 @@ function showHint() {
   if (entry.code.length === 1 || state.hintLevel >= 1) {
     state.hintLevel = 2;
     state.revealed = true;
+    state.candidates = null;
+    state.page = 0;
     state.outcome = "revealed";
     recordMiss(entry);
-    announce("答案係 " + entry.code);
+    announce("答案係 " + entry.code + "。撳 Enter 去下一題");
   } else {
     state.hintLevel = 1;
-    state.outcome = "hint";
+    if (state.outcome !== "choosing") state.outcome = "hint";
     announce("頭碼係 " + entry.code[0]);
   }
   render();
@@ -390,12 +433,16 @@ function onEscape() {
     return;
   }
   if (state.mode !== "question" || state.outcome === "correct") return;
-  state.typed = "";
-  state.notice = "";
+  clearTyping();
   render();
 }
 
 function onSpace() {
+  if (!overlayEl.hidden) return;
+  if (state.outcome === "choosing") pickRelative(0);
+}
+
+function onEnter() {
   if (!overlayEl.hidden) return;
   if (state.mode === "summary") {
     if (state.kind === "practice") nextGroup();
@@ -403,22 +450,20 @@ function onSpace() {
     else exitReview();
     return;
   }
+  if (state.outcome === "choosing") return;
   if (state.outcome === "correct") {
     advance();
     return;
   }
   const entry = current();
-  if (entry && !state.counted) recordMiss(entry);
-  advance();
-}
-
-function onEnter() {
-  if (!overlayEl.hidden) return;
-  if (state.mode === "summary" || state.outcome === "correct") {
-    onSpace();
+  if (!entry) return;
+  if (state.typed && state.typed.length < entry.code.length) {
+    markWrong(entry);
+    render();
     return;
   }
-  if (state.typed) submit();
+  if (!state.counted) recordMiss(entry);
+  advance();
 }
 
 function nextGroup() {
@@ -442,8 +487,6 @@ function onReviewClick() {
 }
 
 function openMap() {
-  clearTimer();
-  if (state.outcome === "correct" && state.mode === "question") state.pendingAdvance = true;
   overlayEl.hidden = false;
   document.body.classList.add("map-open");
 }
@@ -451,10 +494,6 @@ function openMap() {
 function closeMap() {
   overlayEl.hidden = true;
   document.body.classList.remove("map-open");
-  if (state.pendingAdvance && state.outcome === "correct" && state.mode === "question") {
-    state.pendingAdvance = false;
-    scheduleAdvance();
-  }
   focusCatcher();
 }
 
@@ -479,6 +518,21 @@ function normalizeLetter(char) {
   if (code >= 0xff41 && code <= 0xff5a) return String.fromCharCode(code - 0xff41 + 97);
   if (/^[a-zA-Z]$/.test(char)) return char.toUpperCase();
   return null;
+}
+
+function digitOffset(event) {
+  if (/^Numpad[1-9]$/.test(event.code || "")) return Number(event.code.slice(6)) - 1;
+  if (/^[1-9]$/.test(event.key)) return Number(event.key) - 1;
+  return null;
+}
+
+function isPageKey(event, delta) {
+  if (delta < 0) {
+    return event.key === "-" || event.key === "_" || event.code === "Minus" ||
+      event.key === "ArrowLeft" || event.key === "ArrowUp" || event.key === "PageUp";
+  }
+  return event.key === "=" || event.key === "+" || event.code === "Equal" ||
+    event.key === "ArrowRight" || event.key === "ArrowDown" || event.key === "PageDown";
 }
 
 function accuracy(correct, attempted) {
@@ -537,11 +591,45 @@ function renderPractice() {
   practiceEl.innerHTML =
     '<p class="hanzi" id="target-char">' + esc(entry.char) + "</p>" +
     '<p class="prompt">' + prompt + "</p>" +
-    '<p class="hint-line">請用英文輸入</p>' +
+    '<p class="hint-line">打完碼，再揀返題目嗰個字</p>' +
     '<div class="slots" id="slots">' + slots + "</div>" +
     '<div class="feedback" id="feedback" data-state="' + esc(state.outcome || "") + '">' +
     renderFeedback(entry) +
     "</div>";
+}
+
+function renderHintBanner(entry) {
+  const letter = entry.code[0];
+  return '<div class="banner hint">提示：頭碼係 ' + esc(letter) + "（" + esc(radicalsFor(letter)) + "）</div>";
+}
+
+function renderCandidates() {
+  const list = state.candidates || [];
+  const pages = pageCount();
+  const slice = list.slice(state.page * PAGE_SIZE, state.page * PAGE_SIZE + PAGE_SIZE);
+  const buttons = slice.map((item, offset) => (
+    '<button type="button" class="candidate' + (offset === 0 ? " active" : "") +
+    '" data-action="pick" data-offset="' + offset + '">' +
+    '<span class="candidate-num">' + (offset + 1) + "</span>" +
+    '<span class="candidate-char">' + esc(item.char) + "</span>" +
+    "</button>"
+  )).join("");
+  const pager = pages > 1
+    ? '<div class="candidate-pager">' +
+      '<button type="button" class="page-btn" data-action="page-prev"' + (state.page === 0 ? " disabled" : "") + ">− 上一頁</button>" +
+      "<span>第 " + (state.page + 1) + "／" + pages + " 頁</span>" +
+      '<button type="button" class="page-btn" data-action="page-next"' + (state.page + 1 >= pages ? " disabled" : "") + ">= 下一頁</button>" +
+      "</div>"
+    : "";
+  return (
+    '<div class="candidates" id="candidates">' +
+    '<p class="candidate-label">揀字　<kbd>Space</kbd> 選 1　<kbd>1</kbd>–<kbd>9</kbd> 揀字' +
+    (pages > 1 ? "　<kbd>-</kbd> <kbd>=</kbd> 翻頁" : "") +
+    "</p>" +
+    '<div class="candidate-grid">' + buttons + "</div>" +
+    pager +
+    "</div>"
+  );
 }
 
 function renderFeedback(entry) {
@@ -549,7 +637,12 @@ function renderFeedback(entry) {
     const shown = state.typed.toUpperCase();
     let text = "✓ 答對！ " + entry.char + " = " + shown + "（" + radicalsFor(shown) + "）";
     if (state.revealed) text += "　留喺複習";
+    text += "　撳 Enter 去下一題";
     return '<div class="banner ok">' + esc(text) + "</div>";
+  }
+  if (state.outcome === "choosing") {
+    const hint = state.hintLevel === 1 ? renderHintBanner(entry) : "";
+    return hint + renderCandidates();
   }
   if (state.outcome === "revealed") {
     return (
@@ -557,13 +650,10 @@ function renderFeedback(entry) {
       esc(entry.code) +
       "（" +
       esc(radicalsFor(entry.code)) +
-      "）。撳 Space 去下一題</div>"
+      "）。撳 Enter 去下一題</div>"
     );
   }
-  if (state.outcome === "hint") {
-    const letter = entry.code[0];
-    return '<div class="banner hint">提示：頭碼係 ' + esc(letter) + "（" + esc(radicalsFor(letter)) + "）</div>";
-  }
+  if (state.outcome === "hint") return renderHintBanner(entry);
   if (state.outcome === "wrong") {
     return '<button type="button" class="retry" data-action="retry">× 唔對，再試一次</button>';
   }
@@ -702,6 +792,7 @@ function boot(chars, radicals) {
   const size = Math.min(chars.characters.length, Number(chars.practiceSize) || chars.characters.length);
   pool = chars.characters.slice(0, size);
   allByChar = new Map(chars.characters.map((entry) => [entry.char, entry]));
+  byCode = indexByCode(chars.characters);
   radicalMap = radicals.map;
   radicalGroups = radicals.groups;
   radicalRows = radicals.rows;
@@ -750,6 +841,24 @@ document.addEventListener("keydown", (event) => {
     showHint();
     return;
   }
+  if (state.outcome === "choosing") {
+    const offset = digitOffset(event);
+    if (offset !== null) {
+      event.preventDefault();
+      pickRelative(offset);
+      return;
+    }
+    if (isPageKey(event, -1)) {
+      event.preventDefault();
+      changePage(-1);
+      return;
+    }
+    if (isPageKey(event, 1)) {
+      event.preventDefault();
+      changePage(1);
+      return;
+    }
+  }
   if (event.key === " " || event.code === "Space") {
     event.preventDefault();
     onSpace();
@@ -762,11 +871,16 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.key === "Backspace") {
     event.preventDefault();
-    if (state.mode === "question" && state.outcome !== "correct" && state.typed) {
-      state.typed = state.typed.slice(0, -1);
-      if (state.outcome === "wrong") state.outcome = null;
+    if (state.mode !== "question" || state.outcome === "correct") return;
+    if (state.outcome === "choosing") {
+      clearTyping();
       render();
+      return;
     }
+    if (!state.typed) return;
+    state.typed = state.typed.slice(0, -1);
+    if (state.outcome === "wrong") state.outcome = typingOutcome();
+    render();
     return;
   }
   if (event.key === "?" || event.key === "？") {
@@ -806,6 +920,9 @@ document.body.addEventListener("click", (event) => {
   else if (action === "review") onReviewClick();
   else if (action === "restart" || action === "repeat-group") onRestart();
   else if (action === "retry") onEscape();
+  else if (action === "pick") pickRelative(Number(button.dataset.offset));
+  else if (action === "page-prev") changePage(-1);
+  else if (action === "page-next") changePage(1);
   else if (action === "next-group") nextGroup();
   else if (action === "continue-review") startReview();
   else if (action === "exit-review") exitReview();

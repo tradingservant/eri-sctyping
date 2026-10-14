@@ -23,10 +23,11 @@ https://tradingservant.github.io/eri-sctyping/
 
 1. 中間有一個大字。
 2. 先將輸入法轉做英文。
-3. 打佢嘅速成碼。通常係兩粒字母，有啲字得一粒。打夠就會即刻對答案。
-4. 打啱：綠色「✓ 答對」，然後自動去下一題。
-5. 打錯：紅色「× 唔對，再試一次」。你可以再打，或者撳 Tab 睇答案。
-6. 字母下面會顯示嗰粒鍵嘅字根，例如 A 下面係「日」。
+3. 打佢嘅速成碼。通常係兩粒字母，有啲字得一粒。打夠碼之後，下面會列出所有用同一個碼嘅字，由常用到少用，每頁 9 個。
+4. 揀返題目嗰個字先算答啱：撳 `1`–`9`、撳空格（選第 1 個）、或者用滑鼠撳。打碼本身唔會完成呢題。
+5. 揀啱：綠色「✓ 答對」。再撳 Enter 去下一題。
+6. 揀錯字：紅色「× 唔對，再試一次」，個字會入複習。碼打錯、或者個字根本唔喺呢個碼入面，都係一樣。
+7. 字母下面會顯示嗰粒鍵嘅字根，例如 A 下面係「日」。字多過 9 個就用 `-`／`=`、方向鍵，或者 PageUp／PageDown 翻頁。
 
 每組 50 題。做完可以去下一組，或者再練同一組。而家預設練最常用嘅 300 個字。
 
@@ -34,10 +35,12 @@ https://tradingservant.github.io/eri-sctyping/
 
 | 鍵 | 做咩 |
 | --- | --- |
-| Enter | 提交 |
-| Esc | 清除已打嘅字母。字根表開住嘅時候，Esc 係關閉 |
-| Space | 下一題。呢組做完之後，Space 會去下一組 |
-| Tab | 先睇頭碼，再撳一次就睇完整答案 |
+| Enter | 答對之後去下一題。呢組做完之後，Enter 會去下一組。未打完就撳 Enter 會當打錯。揀字選單開住嘅時候，Enter 唔會跳題 |
+| Esc | 清除已打嘅字母。選單開住就收埋，唔當打錯。字根表開住嘅時候，Esc 係關閉 |
+| Space | 選而家呢頁第 1 個候選字 |
+| 1–9 | 揀而家呢頁第 1 至第 9 個候選字。右邊數字鍵都得 |
+| - / = | 上一頁／下一頁。方向鍵同 PageUp／PageDown 一樣，唔會繞返去第一頁 |
+| Tab | 先睇頭碼，再撳一次就睇完整答案。睇過完整答案先打啱，個字會留喺複習 |
 | ? | 打開 24 個字根表 |
 
 ## 右邊
@@ -105,6 +108,6 @@ python3 data/build_characters.py
 
 ## English
 
-A static page for practising Sucheng (速成), the two-letter form of Cangjie 5. Open it in desktop Chrome or Edge, install it from the address bar, and it works offline after the first visit. Paths are relative so GitHub Pages can serve it from `/eri-sctyping/`.
+A static page for practising Sucheng (速成), the two-letter form of Cangjie 5. Typing the code opens a frequency-ordered candidate list from the whole table, like a real Sucheng input method; the question is finished only when you pick the target character (1–9, Space for the first candidate, or a click). Enter goes to the next question. Open it in desktop Chrome or Edge, install it from the address bar, and it works offline after the first visit. Paths are relative so GitHub Pages can serve it from `/eri-sctyping/`.
 
 Codes are derived from the Rime `cangjie5` table: the first and last letter, or the single letter when the Cangjie code is only one letter. The Rime cangjie and quick projects are LGPL-3.0. See `data/SOURCE.md`.
