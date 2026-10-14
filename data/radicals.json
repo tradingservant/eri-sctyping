@@ -1,0 +1,64 @@
+{
+  "note": "Fifth-generation Cangjie radicals. Y is 卜 (U+535C), not katakana ト (U+30C8). Z is 重.",
+  "map": {
+    "a": "日",
+    "b": "月",
+    "c": "金",
+    "d": "木",
+    "e": "水",
+    "f": "火",
+    "g": "土",
+    "h": "竹",
+    "i": "戈",
+    "j": "十",
+    "k": "大",
+    "l": "中",
+    "m": "一",
+    "n": "弓",
+    "o": "人",
+    "p": "心",
+    "q": "手",
+    "r": "口",
+    "s": "尸",
+    "t": "廿",
+    "u": "山",
+    "v": "女",
+    "w": "田",
+    "x": "難",
+    "y": "卜",
+    "z": "重"
+  },
+  "groups": [
+    {
+      "id": "philosophy",
+      "name": "哲理類",
+      "sample": "日月金木水火土",
+      "letters": ["a", "b", "c", "d", "e", "f", "g"]
+    },
+    {
+      "id": "stroke",
+      "name": "筆畫類",
+      "sample": "竹戈十大中一弓",
+      "letters": ["h", "i", "j", "k", "l", "m", "n"]
+    },
+    {
+      "id": "body",
+      "name": "人體類",
+      "sample": "人心手口",
+      "letters": ["o", "p", "q", "r"]
+    },
+    {
+      "id": "shape",
+      "name": "字形類",
+      "sample": "尸廿山女田卜",
+      "letters": ["s", "t", "u", "v", "w", "y"]
+    },
+    {
+      "id": "special",
+      "name": "特別鍵",
+      "sample": "難（X）　重（Z）",
+      "letters": ["x", "z"]
+    }
+  ],
+  "rows": ["qwertyuiop", "asdfghjkl", "zxcvbnm"]
+}
