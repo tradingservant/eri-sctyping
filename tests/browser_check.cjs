@@ -7,138 +7,56 @@ const fs = require("fs");
 const puppeteer = require("puppeteer-core");
 
 const URL = process.env.SUCHENG_URL || "http://127.0.0.1:8765/";
-const PAGE_SIZE = 9;
-
-function indexByCode(characters) {
-  const map = new Map();
-  for (const entry of characters) {
-    const codes = [entry.code].concat(entry.alts || []);
-    for (const code of codes) {
-      if (!map.has(code)) map.set(code, []);
-      const list = map.get(code);
-      if (!list.some((item) => item.char === entry.char)) list.push(entry);
-    }
-  }
-  return map;
-}
 
 async function readChar(page) {
   return page.$eval("#target-char", (el) => el.textContent.trim());
 }
 
-async function pagerText(page) {
-  return page.$eval(".candidate-pager", (el) => el.innerText.replace(/\s+/g, " "));
+async function compose(page, reading, character) {
+  await page.focus("#answer");
+  const midway = await page.evaluate((readingText) => {
+    const el = document.querySelector("#answer");
+    el.focus();
+    el.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
+    el.value = readingText;
+    el.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: readingText }));
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, data: readingText, inputType: "insertCompositionText" }));
+    const feedback = document.querySelector("#feedback");
+    return feedback ? feedback.dataset.state : "";
+  }, reading);
+  if (midway === "correct" || midway === "wrong") {
+    throw new Error("Composition reading was scored: " + midway);
+  }
+  await page.evaluate((text) => {
+    const el = document.querySelector("#answer");
+    el.value = text;
+    el.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: text }));
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertCompositionText" }));
+  }, character);
+  await page.waitForFunction(() => {
+    const feedback = document.querySelector("#feedback");
+    return feedback && (feedback.dataset.state === "correct" || feedback.dataset.state === "wrong");
+  }, { timeout: 3000 });
 }
 
-async function answerCurrent(page, byCode, codeByChar, options = {}) {
+async function answerCurrent(page) {
   const before = await readChar(page);
-  const code = codeByChar.get(before);
-  if (!code) throw new Error("No Sucheng code for " + before);
-  const list = byCode.get(code) || [];
-  const index = list.findIndex((item) => item.char === before);
-  if (index < 0) throw new Error(before + " is missing from candidates for " + code);
-
-  for (const letter of code) await page.keyboard.press(letter);
-  await page.waitForSelector("#feedback[data-state='choosing']", { timeout: 4000 });
-  const stillChoosing = await page.$eval("#feedback", (el) => el.dataset.state);
-  if (stillChoosing !== "choosing") throw new Error("Typing the code completed the question");
-
-  if (options.checkEnter) {
-    await page.keyboard.press("Enter");
-    const afterEnter = await page.evaluate(() => ({
-      state: document.querySelector("#feedback").dataset.state,
-      char: document.querySelector("#target-char").textContent.trim(),
-    }));
-    if (afterEnter.state !== "choosing" || afterEnter.char !== before) {
-      throw new Error("Enter advanced while the candidate menu was open");
-    }
-  }
-
-  const shown = await page.$$eval("#candidates .candidate-char", (els) => els.map((el) => el.textContent));
-  const expected = list.slice(0, PAGE_SIZE).map((item) => item.char);
-  if (shown.join("") !== expected.join("")) {
-    throw new Error("Candidates for " + before + "/" + code + " were " + shown.join("") + " expected " + expected.join(""));
-  }
-  const outlined = await page.$eval(".candidate.active .candidate-char", (el) => el.textContent);
-  if (outlined !== expected[0]) throw new Error("Outlined candidate was " + outlined);
-
-  if (!options.pagingDone && list.length > PAGE_SIZE) {
-    fs.mkdirSync("/tmp/shots", { recursive: true });
-    fs.mkdirSync("/opt/cursor/artifacts", { recursive: true });
-    await page.screenshot({ path: "/tmp/shots/candidate_menu.png" });
-    fs.copyFileSync("/tmp/shots/candidate_menu.png", "/opt/cursor/artifacts/candidate_menu.png");
-    await page.keyboard.press("=");
-    const pageTwo = await pagerText(page);
-    if (!pageTwo.includes("第 2／")) throw new Error("Equal did not page: " + pageTwo);
-    const pageTwoChars = await page.$$eval("#candidates .candidate-char", (els) => els.map((el) => el.textContent));
-    const pageTwoExpected = list.slice(PAGE_SIZE, PAGE_SIZE * 2).map((item) => item.char);
-    if (pageTwoChars.join("") !== pageTwoExpected.join("")) {
-      throw new Error("Page 2 candidates were " + pageTwoChars.join("") + " expected " + pageTwoExpected.join(""));
-    }
-    await page.screenshot({ path: "/tmp/shots/candidate_menu_page2.png" });
-    fs.copyFileSync("/tmp/shots/candidate_menu_page2.png", "/opt/cursor/artifacts/candidate_menu_page2.png");
-    await page.keyboard.press("-");
-    await page.keyboard.press("ArrowRight");
-    const arrowPage = await pagerText(page);
-    if (!arrowPage.includes("第 2／")) throw new Error("ArrowRight did not page: " + arrowPage);
-    await page.keyboard.press("PageUp");
-    const back = await pagerText(page);
-    if (!back.includes("第 1／")) throw new Error("PageUp did not return: " + back);
-    await page.keyboard.press("PageDown");
-    await page.keyboard.press("ArrowLeft");
-    const home = await pagerText(page);
-    if (!home.includes("第 1／")) throw new Error("Paging did not clamp home: " + home);
-    await page.keyboard.press("PageUp");
-    const clamped = await pagerText(page);
-    if (!clamped.includes("第 1／")) throw new Error("PageUp wrapped: " + clamped);
-    options.pagingDone = true;
-  }
-
-  const pageIndex = Math.floor(index / PAGE_SIZE);
-  for (let step = 0; step < pageIndex; step += 1) await page.keyboard.press("PageDown");
-  const offset = index % PAGE_SIZE;
-  if (options.how === "click") {
-    await page.click('#candidates button[data-offset="' + offset + '"]');
-  } else if (options.how === "numpad") {
-    await page.keyboard.press("Numpad" + (offset + 1));
-  } else if (offset === 0) {
-    await page.keyboard.press("Space");
-  } else {
-    await page.keyboard.press(String(offset + 1));
-  }
-
-  await page.waitForSelector("#feedback[data-state='correct']", { timeout: 4000 });
-  if (options.checkSpace) {
-    await page.keyboard.press("Space");
-    const stayed = await readChar(page);
-    if (stayed !== before) throw new Error("Space advanced after a correct answer");
-    const state = await page.$eval("#feedback", (el) => el.dataset.state);
-    if (state !== "correct") throw new Error("Space cleared a correct answer");
-  }
+  await compose(page, "xx", before);
+  const state = await page.$eval("#feedback", (el) => el.dataset.state);
+  if (state !== "correct") throw new Error("Expected correct for " + before + ", got " + state);
+  const banner = await page.$eval("#result-banner", (el) => el.textContent);
+  if (!banner.includes("Space")) throw new Error("Success banner did not mention Space: " + banner);
+  if (!banner.includes(before)) throw new Error("Success banner missing the character: " + banner);
   await page.keyboard.press("Enter");
+  const afterEnter = await readChar(page);
+  if (afterEnter !== before) throw new Error("Enter advanced after a correct answer");
+  await page.keyboard.press("Space");
   await page.waitForFunction((prev) => {
     if (document.querySelector("#round-summary")) return true;
     const el = document.querySelector("#target-char");
     return Boolean(el && el.textContent.trim() !== prev);
   }, { timeout: 3000 }, before);
-  return { char: before, code, length: code.length, candidates: list.length };
-}
-
-async function pickCorrect(page, byCode, codeByChar) {
-  const before = await readChar(page);
-  const code = codeByChar.get(before);
-  const list = byCode.get(code) || [];
-  const index = list.findIndex((item) => item.char === before);
-  if (index < 0) throw new Error("Cannot pick " + before);
-  for (const letter of code) await page.keyboard.press(letter);
-  await page.waitForSelector("#feedback[data-state='choosing']");
-  const pageIndex = Math.floor(index / PAGE_SIZE);
-  for (let step = 0; step < pageIndex; step += 1) await page.keyboard.press("PageDown");
-  const offset = index % PAGE_SIZE;
-  if (offset === 0) await page.keyboard.press("Space");
-  else await page.keyboard.press(String(offset + 1));
-  await page.waitForSelector("#feedback[data-state='correct']");
-  return { char: before, code, list };
+  return before;
 }
 
 async function main() {
@@ -159,10 +77,25 @@ async function main() {
   await page.evaluate(() => localStorage.clear());
   await page.reload({ waitUntil: "networkidle0" });
   await page.waitForSelector("#target-char");
+  await page.waitForSelector("#answer");
 
-  const data = await page.evaluate(() => fetch("./data/characters.json").then((response) => response.json()));
-  const codeByChar = new Map(data.characters.slice(0, data.practiceSize).map((entry) => [entry.char, entry.code]));
-  const byCode = indexByCode(data.characters);
+  const chromeUi = await page.evaluate(() => ({
+    candidates: Boolean(document.querySelector("#candidates, .candidates, .candidate, .slots, .slot-letter, #catcher")),
+    shortcuts: document.querySelector(".shortcut-bar").innerText.replace(/\s+/g, " "),
+    hint: document.querySelector(".hint-line").textContent,
+  }));
+  if (chromeUi.candidates) throw new Error("Candidate bar or code boxes are still in the page");
+  if (!chromeUi.shortcuts.includes("Space") || !chromeUi.shortcuts.includes("下一題")) {
+    throw new Error("Shortcuts were: " + chromeUi.shortcuts);
+  }
+  if (chromeUi.shortcuts.includes("揀字") || chromeUi.shortcuts.includes("翻頁")) {
+    throw new Error("Old candidate shortcuts remain: " + chromeUi.shortcuts);
+  }
+
+  fs.mkdirSync("/tmp/shots", { recursive: true });
+  fs.mkdirSync("/opt/cursor/artifacts", { recursive: true });
+  await page.screenshot({ path: "/tmp/shots/practice_without_candidates.png" });
+  fs.copyFileSync("/tmp/shots/practice_without_candidates.png", "/opt/cursor/artifacts/practice_without_candidates.png");
 
   const client = await page.createCDPSession();
   const manifest = await client.send("Page.getAppManifest");
@@ -170,53 +103,46 @@ async function main() {
     throw new Error("Manifest problem: " + JSON.stringify(manifest.errors));
   }
 
-  const paging = { pagingDone: false };
-  let oneLetter = 0;
-  let usedClick = false;
-  let usedNumpad = false;
-  let sawPager = false;
-  for (let index = 0; index < 50; index += 1) {
-    const preview = await readChar(page);
-    const previewCode = codeByChar.get(preview);
-    const previewList = byCode.get(previewCode) || [];
-    let how = "keyboard";
-    if (!usedClick && previewList.length > 1) {
-      how = "click";
-      usedClick = true;
-    } else if (!usedNumpad && index > 0) {
-      how = "numpad";
-      usedNumpad = true;
-    }
-    const result = await answerCurrent(page, byCode, codeByChar, {
-      how: how,
-      checkEnter: index === 0,
-      checkSpace: index === 0,
-      pagingDone: paging.pagingDone,
-    });
-    if (result.candidates > PAGE_SIZE) {
-      sawPager = true;
-      paging.pagingDone = true;
-    }
-    if (result.length === 1) oneLetter += 1;
+  const first = await readChar(page);
+  const composingSpace = await page.evaluate(() => {
+    const event = new KeyboardEvent("keydown", { key: " ", code: "Space", bubbles: true, cancelable: true, isComposing: true });
+    return document.dispatchEvent(event);
+  });
+  if (!composingSpace) throw new Error("Space was cancelled while composing");
+  if ((await readChar(page)) !== first) throw new Error("Composing Space changed the question");
+
+  await compose(page, "xx", first);
+  const success = await page.$eval("#result-banner", (el) => el.textContent);
+  const data = await page.evaluate(() => fetch("./data/characters.json").then((response) => response.json()));
+  const byChar = new Map(data.characters.slice(0, data.practiceSize).map((entry) => [entry.char, entry]));
+  const radicals = await page.evaluate(() => fetch("./data/radicals.json").then((response) => response.json()));
+  const firstEntry = byChar.get(first);
+  const radicalText = [...firstEntry.code.toLowerCase()].map((letter) => radicals.map[letter]).join("");
+  if (!success.includes(firstEntry.code) || !success.includes(radicalText) || !success.includes("Space")) {
+    throw new Error("Learning banner was: " + success);
   }
-  if (oneLetter < 1) throw new Error("Expected a one-letter code in the first 50");
-  if (!sawPager || !paging.pagingDone) throw new Error("Expected a candidate list longer than one page");
-  if (!usedClick) throw new Error("Did not click a candidate");
+  await page.screenshot({ path: "/tmp/shots/practice_correct_space.png" });
+  fs.copyFileSync("/tmp/shots/practice_correct_space.png", "/opt/cursor/artifacts/practice_correct_space.png");
+  await page.keyboard.press("Space");
+  await page.waitForFunction((prev) => document.querySelector("#target-char").textContent.trim() !== prev, {}, first);
+
+  for (let index = 1; index < 50; index += 1) await answerCurrent(page);
 
   const summary = await page.$eval("#round-summary", (el) => el.innerText);
   if (!summary.includes("答對 50／50") || !summary.includes("準確率 100%") || !summary.includes("最長連勝 50")) {
     throw new Error("Summary was wrong:\n" + summary);
   }
+  if (!summary.includes("Space")) throw new Error("Summary did not mention Space");
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("sucheng-practice-v1")));
   if (stored.today.correct !== 50 || stored.today.attempted !== 50 || stored.review.length !== 0) {
     throw new Error("Storage after a perfect round: " + JSON.stringify(stored));
   }
   if (stored.nextBlock !== 1) throw new Error("Expected next block 1, got " + stored.nextBlock);
 
-  await page.keyboard.press("Enter");
+  await page.keyboard.press("Space");
   await page.waitForSelector("#target-char");
   const band = await page.$eval(".band", (el) => el.textContent);
-  if (!band.includes("51")) throw new Error("Enter did not open the next group: " + band);
+  if (!band.includes("51")) throw new Error("Space did not open the next group: " + band);
 
   await page.reload({ waitUntil: "networkidle0" });
   await page.waitForSelector("#target-char");
@@ -231,123 +157,81 @@ async function main() {
       scope: ready.scope,
       state: ready.active && ready.active.state,
       controller: Boolean(navigator.serviceWorker.controller),
-      script: ready.active && ready.active.scriptURL,
       caches: names,
     };
   });
   if (!sw.controller || sw.state !== "activated") throw new Error("Service worker not controlling: " + JSON.stringify(sw));
-  if (!sw.caches.includes("sucheng-static-v2")) throw new Error("Cache was not bumped: " + sw.caches.join(","));
+  if (!sw.caches.includes("sucheng-static-v3")) throw new Error("Cache was not bumped: " + sw.caches.join(","));
 
-  async function settle(predicate, label) {
+  async function nextTwoLetter() {
     for (let guard = 0; guard < 12; guard += 1) {
       const ch = await readChar(page);
-      const code = codeByChar.get(ch);
-      const list = byCode.get(code) || [];
-      if (predicate(ch, code, list)) return { ch, code, list };
-      await answerCurrent(page, byCode, codeByChar, { pagingDone: true });
+      const code = byChar.get(ch).code;
+      if (code.length >= 2) return { ch, code };
+      await compose(page, "ok", ch);
+      await page.keyboard.press("Space");
+      await page.waitForFunction((prev) => {
+        const el = document.querySelector("#target-char");
+        return el && el.textContent.trim() !== prev;
+      }, {}, ch);
     }
-    throw new Error("Could not find " + label);
+    throw new Error("Could not find a two-letter character");
   }
 
-  const first = await settle((ch, code, list) => code.length === 2 && list.length >= 2, "a shared two-letter code");
-  for (const letter of first.code) await page.keyboard.press(letter);
-  await page.waitForSelector("#candidates");
-  const reviewBeforeCancel = await page.evaluate(() => JSON.parse(localStorage.getItem("sucheng-practice-v1")).review.slice());
-  await page.keyboard.press("Escape");
-  const cancelled = await page.evaluate(() => ({
-    menu: Boolean(document.querySelector("#candidates")),
-    state: document.querySelector("#feedback").dataset.state,
-    typed: document.querySelector(".slot-letter").textContent.trim(),
-  }));
-  if (cancelled.menu || cancelled.state || cancelled.typed) {
-    throw new Error("Escape did not close the menu: " + JSON.stringify(cancelled));
-  }
-  const reviewAfterCancel = await page.evaluate(() => JSON.parse(localStorage.getItem("sucheng-practice-v1")).review);
-  if (reviewAfterCancel.join("") !== reviewBeforeCancel.join("")) {
-    throw new Error("Closing the menu counted a miss");
-  }
-
-  await page.keyboard.press(first.code[0]);
-  const typed = await page.$eval(".slot-letter", (el) => el.textContent.trim());
-  const radical = await page.$eval(".slot-radical", (el) => el.textContent.trim());
-  if (typed !== first.code[0]) throw new Error("First box was " + typed);
-  const radicals = await page.evaluate(() => fetch("./data/radicals.json").then((response) => response.json()));
-  if (radical !== radicals.map[first.code[0].toLowerCase()]) {
-    throw new Error("Radical under " + first.code[0] + " was " + radical);
-  }
-  await page.keyboard.press("Enter");
-  await page.waitForSelector("#feedback[data-state='wrong']");
-  await page.keyboard.press("Escape");
-
-  const wrongCode = first.code === "QQ" ? "WW" : "QQ";
-  await page.keyboard.press(wrongCode[0]);
-  await page.keyboard.press(wrongCode[1]);
-  await page.waitForSelector("#feedback[data-state='wrong']");
-  const wrongMenu = await page.$("#candidates");
-  if (wrongMenu) throw new Error("A wrong code opened the candidate menu");
+  const target = await readChar(page);
+  const wrongChar = target === "的" ? "一" : "的";
+  await compose(page, "qq", wrongChar);
   const wrongText = await page.$eval(".retry", (el) => el.textContent.trim());
   if (wrongText !== "× 唔對，再試一次") throw new Error("Wrong message: " + wrongText);
   const reviewAfterMiss = await page.evaluate(() => JSON.parse(localStorage.getItem("sucheng-practice-v1")).review);
-  if (!reviewAfterMiss.includes(first.ch)) throw new Error("Miss was not added to review");
+  if (!reviewAfterMiss.includes(target)) throw new Error("Miss was not added to review");
+  if (await page.$("#candidates")) throw new Error("Wrong answer opened a candidate menu");
 
-  for (const letter of first.code) await page.keyboard.press(letter);
-  await page.waitForSelector("#candidates");
-  const targetIndex = first.list.findIndex((item) => item.char === first.ch);
-  const wrongOffset = targetIndex % PAGE_SIZE === 0 ? 1 : 0;
-  await page.keyboard.press(String(wrongOffset + 1));
-  await page.waitForSelector("#feedback[data-state='wrong']");
-  if (await page.$("#candidates")) throw new Error("Wrong candidate left the menu open");
-
-  await pickCorrect(page, byCode, codeByChar);
+  await page.keyboard.press("Escape");
+  const cleared = await page.$eval("#answer", (el) => el.value);
+  if (cleared) throw new Error("Escape did not clear the input");
+  await compose(page, "ok", target);
   const reviewAfterFix = await page.evaluate(() => JSON.parse(localStorage.getItem("sucheng-practice-v1")).review);
-  if (reviewAfterFix.includes(first.ch)) throw new Error("A corrected answer stayed in review");
-  await page.keyboard.press("Enter");
-  await page.waitForFunction((prev) => document.querySelector("#target-char").textContent.trim() !== prev, {}, first.ch);
+  if (reviewAfterFix.includes(target)) throw new Error("A corrected answer stayed in review");
+  await page.keyboard.press("Space");
+  await page.waitForFunction((prev) => document.querySelector("#target-char").textContent.trim() !== prev, {}, target);
 
-  const hinted = await settle((ch, code) => code.length === 2, "a character for the hint");
+  const hintedItem = await nextTwoLetter();
+  const hinted = hintedItem.ch;
+  const hintedCode = hintedItem.code;
   await page.keyboard.press("Tab");
   const hint = await page.$eval("#feedback", (el) => el.textContent.trim());
-  if (!hint.includes("提示：頭碼係 " + hinted.code[0])) throw new Error("Hint was: " + hint);
-  await pickCorrect(page, byCode, codeByChar);
+  if (!hint.includes("提示：頭碼係 " + hintedCode[0])) throw new Error("Hint was: " + hint);
+  await compose(page, "ok", hinted);
   const hintedReview = await page.evaluate(() => JSON.parse(localStorage.getItem("sucheng-practice-v1")).review);
-  if (hintedReview.includes(hinted.ch)) throw new Error("A hint without the answer was stored as a miss");
-  await page.keyboard.press("Enter");
+  if (hintedReview.includes(hinted)) throw new Error("A hint without the full answer was stored as a miss");
+  await page.keyboard.press("Space");
   await page.waitForSelector("#target-char");
 
-  const revealed = await settle((ch, code) => code.length === 2, "a two-letter character");
-  for (const letter of revealed.code) await page.keyboard.press(letter);
-  await page.waitForSelector("#candidates");
+  const revealedItem = await nextTwoLetter();
+  const revealed = revealedItem.ch;
+  const revealedCode = revealedItem.code;
   await page.keyboard.press("Tab");
-  const during = await page.evaluate(() => ({
-    menu: Boolean(document.querySelector("#candidates")),
-    text: document.querySelector("#feedback").textContent.trim(),
-  }));
-  if (!during.menu || !during.text.includes("提示：頭碼係 " + revealed.code[0])) {
-    throw new Error("Hint during the menu failed: " + JSON.stringify(during));
-  }
   await page.keyboard.press("Tab");
-  const answer = await page.evaluate(() => ({
-    menu: Boolean(document.querySelector("#candidates")),
-    text: document.querySelector("#feedback").textContent.trim(),
-  }));
-  if (answer.menu || !answer.text.includes("答案係 " + revealed.code) || !answer.text.includes("Enter")) {
-    throw new Error("Reveal was: " + JSON.stringify(answer));
+  const answer = await page.$eval("#feedback", (el) => el.textContent.trim());
+  if (!answer.includes("答案係 " + revealedCode) || !answer.includes("Space")) {
+    throw new Error("Reveal was: " + answer);
   }
-  await pickCorrect(page, byCode, codeByChar);
+  await compose(page, "ok", revealed);
   const kept = await page.evaluate(() => JSON.parse(localStorage.getItem("sucheng-practice-v1")).review);
-  if (!kept.includes(revealed.ch)) throw new Error("Revealed character left the review list");
-  await page.keyboard.press("Enter");
-  await page.waitForFunction((prev) => {
-    const el = document.querySelector("#target-char");
-    return el && el.textContent.trim() !== prev;
-  }, {}, revealed.ch);
+  if (!kept.includes(revealed)) throw new Error("Revealed character left the review list");
+  const keptBanner = await page.$eval("#result-banner", (el) => el.textContent);
+  if (!keptBanner.includes("留喺複習") || !keptBanner.includes("Space")) {
+    throw new Error("Revealed success banner was: " + keptBanner);
+  }
+  await page.keyboard.press("Space");
 
   await page.click("[data-action='review']");
-  await page.waitForFunction((char) => document.querySelector("#target-char").textContent.trim() === char, {}, revealed.ch);
-  await pickCorrect(page, byCode, codeByChar);
+  await page.waitForFunction((char) => document.querySelector("#target-char").textContent.trim() === char, {}, revealed);
+  await compose(page, "ok", revealed);
   const clearedEarly = await page.evaluate(() => JSON.parse(localStorage.getItem("sucheng-practice-v1")).review);
   if (clearedEarly.length !== 0) throw new Error("Review list was not cleared: " + clearedEarly.join(""));
-  await page.keyboard.press("Enter");
+  await page.keyboard.press("Space");
   await page.waitForSelector("#round-summary");
   const reviewSummary = await page.$eval("#round-summary", (el) => el.textContent);
   if (!reviewSummary.includes("複習清晒")) throw new Error("Review summary was: " + reviewSummary);
@@ -359,8 +243,6 @@ async function main() {
   const z = await page.$eval("[data-letter='z'] .key-radical", (el) => el.textContent);
   const x = await page.$eval("[data-letter='x'] .key-radical", (el) => el.textContent);
   if (z !== "重" || x !== "難") throw new Error("Special keys were " + x + z);
-  fs.mkdirSync("/tmp/shots", { recursive: true });
-  await page.screenshot({ path: "/tmp/shots/map.png" });
   await page.keyboard.press("Escape");
   await page.waitForSelector(".overlay[hidden]");
 
@@ -374,18 +256,16 @@ async function main() {
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForSelector("#target-char", { timeout: 5000 });
   const offlineChar = await readChar(page);
-  if (!codeByChar.has(offlineChar)) throw new Error("Offline page showed an unknown character");
+  if (!byChar.has(offlineChar)) throw new Error("Offline page showed an unknown character");
   const offlineExtra = errors.slice(offlineErrorsBefore);
 
-  if (errors.length) {
-    console.log("console/page errors:\n" + errors.join("\n"));
-  }
+  if (errors.length) console.log("console/page errors:\n" + errors.join("\n"));
   const pageErrors = errors.filter((item) => item.startsWith("PAGE"));
   const onlineErrors = errors.slice(0, offlineErrorsBefore);
   if (pageErrors.length || onlineErrors.length) {
     throw new Error("Errors before offline:\n" + onlineErrors.concat(pageErrors).join("\n"));
   }
-  console.log("ok", JSON.stringify({ oneLetter, sw, offlineChar, offlineConsole: offlineExtra, usedClick, usedNumpad, sawPager }));
+  console.log("ok", JSON.stringify({ sw, offlineChar, offlineConsole: offlineExtra }));
   await browser.close();
 }
 

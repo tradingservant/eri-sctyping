@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#2f6fe0">
-  <meta name="description" content="用鍵盤練習常用中文字嘅速成碼。離線都用得。">
+  <meta name="description" content="用你電腦嘅速成輸入法練習常用中文字。離線都用得。">
   <title>練習打中文速成</title>
   <link rel="icon" href="./icons/icon-192.png" type="image/png">
   <link rel="apple-touch-icon" href="./icons/icon-192.png">
@@ -27,20 +27,26 @@
     <main class="workspace">
       <div class="left-col">
         <section class="card practice" id="practice" aria-label="練習">
-          <p class="loading">載入緊字表…</p>
+          <p class="loading" id="loading">載入緊字表…</p>
+          <div id="question" hidden>
+            <p class="hanzi" id="target-char"></p>
+            <p class="prompt" id="prompt">用速成輸入法打出呢個字</p>
+            <p class="hint-line">用你電腦嘅速成輸入法。候選字係 Windows 自己嗰個。</p>
+            <div class="answer-wrap">
+              <input id="answer" class="answer" lang="zh-Hant-HK" inputmode="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="打出呢個字">
+            </div>
+            <div class="feedback" id="feedback" data-state=""></div>
+          </div>
+          <div id="summary-host" hidden></div>
         </section>
         <div class="shortcut-bar" aria-label="鍵盤快捷鍵">
-          <span><kbd>Enter</kbd> 下一題</span>
+          <span><kbd>Space</kbd> 下一題</span>
           <span class="sep" aria-hidden="true"></span>
           <span><kbd>Esc</kbd> 清除</span>
           <span class="sep" aria-hidden="true"></span>
-          <span><kbd>Space</kbd> 選第一個</span>
-          <span class="sep" aria-hidden="true"></span>
-          <span><kbd>1</kbd>–<kbd>9</kbd> 揀字</span>
-          <span class="sep" aria-hidden="true"></span>
-          <span><kbd>-</kbd> <kbd>=</kbd> 翻頁</span>
-          <span class="sep" aria-hidden="true"></span>
           <span><kbd>Tab</kbd> 睇提示</span>
+          <span class="sep" aria-hidden="true"></span>
+          <span><kbd>?</kbd> 字根表</span>
         </div>
       </div>
 
@@ -68,7 +74,6 @@
   </div>
 
   <p id="live" class="sr-only" aria-live="polite"></p>
-  <input id="catcher" class="catcher" lang="en" inputmode="text" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="輸入速成碼">
 
   <noscript>
     <p class="noscript">要開住 JavaScript 先練到。請用 Chrome 或 Edge。</p>
